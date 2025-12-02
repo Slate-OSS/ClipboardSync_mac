@@ -6,6 +6,13 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		45C408692EDED7BC007CE043 /* Crypto in Frameworks */ = {isa = PBXBuildFile; productRef = 45C408682EDED7BC007CE043 /* Crypto */; };
+		45C4086B2EDED7BC007CE043 /* CryptoExtras in Frameworks */ = {isa = PBXBuildFile; productRef = 45C4086A2EDED7BC007CE043 /* CryptoExtras */; };
+		45C4086D2EDED7BC007CE043 /* _CryptoExtras in Frameworks */ = {isa = PBXBuildFile; productRef = 45C4086C2EDED7BC007CE043 /* _CryptoExtras */; };
+		45C408702EDED81E007CE043 /* SwiftImageReadWrite in Frameworks */ = {isa = PBXBuildFile; productRef = 45C4086F2EDED81E007CE043 /* SwiftImageReadWrite */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		45C408382EDED485007CE043 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +59,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				45C408692EDED7BC007CE043 /* Crypto in Frameworks */,
+				45C408702EDED81E007CE043 /* SwiftImageReadWrite in Frameworks */,
+				45C4086B2EDED7BC007CE043 /* CryptoExtras in Frameworks */,
+				45C4086D2EDED7BC007CE043 /* _CryptoExtras in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +123,10 @@
 			);
 			name = ClipboardSync;
 			packageProductDependencies = (
+				45C408682EDED7BC007CE043 /* Crypto */,
+				45C4086A2EDED7BC007CE043 /* CryptoExtras */,
+				45C4086C2EDED7BC007CE043 /* _CryptoExtras */,
+				45C4086F2EDED81E007CE043 /* SwiftImageReadWrite */,
 			);
 			productName = ClipboardSync;
 			productReference = 45C4082A2EDED482007CE043 /* ClipboardSync.app */;
@@ -195,6 +210,10 @@
 			);
 			mainGroup = 45C408212EDED482007CE043;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				45C408672EDED7BC007CE043 /* XCRemoteSwiftPackageReference "swift-crypto" */,
+				45C4086E2EDED81E007CE043 /* XCRemoteSwiftPackageReference "SwiftImageReadWrite" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 45C4082B2EDED482007CE043 /* Products */;
 			projectDirPath = "";
@@ -563,6 +582,48 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		45C408672EDED7BC007CE043 /* XCRemoteSwiftPackageReference "swift-crypto" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-crypto.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 4.2.0;
+			};
+		};
+		45C4086E2EDED81E007CE043 /* XCRemoteSwiftPackageReference "SwiftImageReadWrite" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/dagronf/SwiftImageReadWrite.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.9.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		45C408682EDED7BC007CE043 /* Crypto */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 45C408672EDED7BC007CE043 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = Crypto;
+		};
+		45C4086A2EDED7BC007CE043 /* CryptoExtras */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 45C408672EDED7BC007CE043 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = CryptoExtras;
+		};
+		45C4086C2EDED7BC007CE043 /* _CryptoExtras */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 45C408672EDED7BC007CE043 /* XCRemoteSwiftPackageReference "swift-crypto" */;
+			productName = _CryptoExtras;
+		};
+		45C4086F2EDED81E007CE043 /* SwiftImageReadWrite */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 45C4086E2EDED81E007CE043 /* XCRemoteSwiftPackageReference "SwiftImageReadWrite" */;
+			productName = SwiftImageReadWrite;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 45C408222EDED482007CE043 /* Project object */;
 }
