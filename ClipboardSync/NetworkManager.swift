@@ -16,11 +16,21 @@ class NetworkManager: ObservableObject {
     @Published var connectionStatus: [String: ConnectionState] = [:]
     
     private var listener: NWListener?
-    private var connections: [String: NWConnection] = [:]
+    private var connections: [String: ConnectionInfo] = [:]
     private let port: UInt16 = 8765
     private let queue = DispatchQueue(label: "com.slateoss.clipboardsync.network")
     
     var onMessageReceived: ((SyncMessage, String) -> Void)?
+    
+    // Connection info with buffer for partial messages
+    private class ConnectionInfo {
+        let connection: NWConnection
+        var receiveBuffer = Data()
+        
+        init(connection: NWConnection) {
+            self.connection = connection
+        }
+    }
     
     init() {
         detectLocalIPAddress()
@@ -56,7 +66,7 @@ class NetworkManager: ObservableObject {
             }
             
             print("🚀 TCP Server started on port \(port)")
-            print("📍 Connect Android to: ws://\(localIPAddress):\(port)")
+            print("📍 Connect Android to: \(localIPAddress):\(port)")
             
         } catch {
             print("❌ Failed to start server: \(error)")
@@ -70,8 +80,8 @@ class NetworkManager: ObservableObject {
         listener?.cancel()
         listener = nil
         
-        for (deviceId, connection) in connections {
-            connection.cancel()
+        for (deviceId, connInfo) in connections {
+            connInfo.connection.cancel()
             print("🔌 Closed connection to \(deviceId.prefix(8))")
         }
         connections.removeAll()
@@ -108,11 +118,13 @@ class NetworkManager: ObservableObject {
     private func handleNewConnection(_ connection: NWConnection) {
         print("🔗 New TCP connection from \(connection.endpoint)")
         
+        let connInfo = ConnectionInfo(connection: connection)
+        
         connection.stateUpdateHandler = { [weak self] newState in
             self?.handleConnectionStateUpdate(connection, state: newState)
         }
         
-        receiveMessage(on: connection)
+        receiveMessage(on: connInfo)
         connection.start(queue: queue)
     }
     
@@ -133,53 +145,90 @@ class NetworkManager: ObservableObject {
         }
     }
     
-    private func receiveMessage(on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] (data, _, isComplete, error) in
+    private func receiveMessage(on connInfo: ConnectionInfo) {
+        // Read with length-prefix framing
+        connInfo.connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] (data, _, isComplete, error) in
             guard let self = self else { return }
             
             if let error = error {
                 print("❌ Receive error: \(error)")
-                self.removeConnection(connection)
+                self.removeConnection(connInfo.connection)
                 return
             }
             
             if let data = data, !data.isEmpty {
-                self.handleReceivedData(data, from: connection)
+                connInfo.receiveBuffer.append(data)
+                self.processReceivedData(connInfo: connInfo)
             }
             
-            if isComplete {
-                self.receiveMessage(on: connection)
+            if !isComplete {
+                self.receiveMessage(on: connInfo)
+            } else {
+                self.removeConnection(connInfo.connection)
             }
         }
     }
     
-    private func handleReceivedData(_ data: Data, from connection: NWConnection) {
+    private func processReceivedData(connInfo: ConnectionInfo) {
         queue.async { [weak self] in
             guard let self = self else { return }
             
-            do {
-                // Try to decode as JSON message
-                let message = try JSONDecoder().decode(SyncMessage.self, from: data)
-                print("📨 Received: \(message.type) from \(message.fromDeviceId.prefix(8))")
+            // Process all complete messages in buffer
+            while connInfo.receiveBuffer.count >= 4 {
+                // Read 4-byte length prefix (big-endian)
+                let lengthData = connInfo.receiveBuffer.prefix(4)
+                let length = lengthData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
                 
-                // Register on handshake
-                if message.type == "handshake" {
-                    self.registerConnection(connection, deviceId: message.fromDeviceId)
+                // Sanity check
+                guard length > 0 && length < 1_000_000 else {
+                    print("❌ Invalid message length: \(length)")
+                    self.removeConnection(connInfo.connection)
+                    return
                 }
                 
-                DispatchQueue.main.async {
-                    self.onMessageReceived?(message, message.fromDeviceId)
+                let totalNeeded = 4 + Int(length)
+                
+                // Wait for complete message
+                guard connInfo.receiveBuffer.count >= totalNeeded else {
+                    break
                 }
                 
-            } catch {
-                print("❌ Invalid message data (\(data.count) bytes): \(error)")
-                // Ignore invalid messages
+                // Extract message
+                let messageData = connInfo.receiveBuffer.subdata(in: 4..<totalNeeded)
+                connInfo.receiveBuffer.removeFirst(totalNeeded)
+                
+                // Decode and handle
+                self.handleReceivedMessage(messageData, from: connInfo.connection)
             }
+        }
+    }
+    
+    private func handleReceivedMessage(_ data: Data, from connection: NWConnection) {
+        do {
+            let message = try JSONDecoder().decode(SyncMessage.self, from: data)
+            print("📨 Received: \(message.type) from \(message.fromDeviceId.prefix(8))")
+            
+            // Register on handshake
+            if message.type == "handshake" {
+                registerConnection(connection, deviceId: message.fromDeviceId)
+            }
+            
+            DispatchQueue.main.async {
+                self.onMessageReceived?(message, message.fromDeviceId)
+            }
+            
+        } catch {
+            print("❌ Invalid message data (\(data.count) bytes): \(error)")
         }
     }
     
     private func registerConnection(_ connection: NWConnection, deviceId: String) {
-        connections[deviceId] = connection
+        if let existingInfo = connections[deviceId] {
+            // Update existing
+            connections[deviceId] = ConnectionInfo(connection: connection)
+        } else {
+            connections[deviceId] = ConnectionInfo(connection: connection)
+        }
         
         DispatchQueue.main.async { [weak self] in
             self?.activeConnections = self?.connections.count ?? 0
@@ -190,7 +239,7 @@ class NetworkManager: ObservableObject {
     }
     
     private func removeConnection(_ connection: NWConnection) {
-        if let deviceId = connections.first(where: { $0.value === connection })?.key {
+        if let deviceId = connections.first(where: { $0.value.connection === connection })?.key {
             connections.removeValue(forKey: deviceId)
             
             DispatchQueue.main.async { [weak self] in
@@ -205,23 +254,28 @@ class NetworkManager: ObservableObject {
     // MARK: - Message Sending
     
     func sendMessage(_ message: SyncMessage, to deviceId: String) -> Bool {
-        guard let connection = connections[deviceId] else {
+        guard let connInfo = connections[deviceId] else {
             print("❌ No connection for \(deviceId.prefix(8))")
             return false
         }
         
         do {
-            let data = try JSONEncoder().encode(message)
+            let messageData = try JSONEncoder().encode(message)
             
-            connection.send(
-                content: data,
+            // Create length-prefixed data
+            var length = UInt32(messageData.count).bigEndian
+            var packetData = Data(bytes: &length, count: 4)
+            packetData.append(messageData)
+            
+            connInfo.connection.send(
+                content: packetData,
                 contentContext: .defaultMessage,
                 isComplete: true,
                 completion: .contentProcessed { error in
                     if let error = error {
                         print("❌ Send failed to \(deviceId.prefix(8)): \(error)")
                     } else {
-                        print("✅ Sent \(message.type) to \(deviceId.prefix(8))")
+                        print("✅ Sent \(message.type) to \(deviceId.prefix(8)) (\(messageData.count) bytes)")
                     }
                 }
             )
@@ -277,7 +331,6 @@ class NetworkManager: ObservableObject {
         }
         print("🌐 Local IP: \(address ?? "Unknown")")
     }
-
 }
 
 enum ConnectionState {
