@@ -26,9 +26,11 @@ class NetworkManager: ObservableObject {
     private class ConnectionInfo {
         let connection: NWConnection
         var receiveBuffer = Data()
+        let deviceId: String?
         
-        init(connection: NWConnection) {
+        init(connection: NWConnection, deviceId: String? = nil) {
             self.connection = connection
+            self.deviceId = deviceId
         }
     }
     
@@ -48,6 +50,15 @@ class NetworkManager: ObservableObject {
             // Use plain TCP (no WebSocket) to bypass sandbox restrictions
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
+            parameters.includePeerToPeer = true
+            
+            // Keep connection alive
+            let tcpOptions = NWProtocolTCP.Options()
+            tcpOptions.enableKeepalive = true
+            tcpOptions.keepaliveIdle = 30
+            tcpOptions.keepaliveInterval = 10
+            tcpOptions.keepaliveCount = 3
+            parameters.defaultProtocolStack.transportProtocol = tcpOptions
             
             listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
             
@@ -121,24 +132,24 @@ class NetworkManager: ObservableObject {
         let connInfo = ConnectionInfo(connection: connection)
         
         connection.stateUpdateHandler = { [weak self] newState in
-            self?.handleConnectionStateUpdate(connection, state: newState)
+            self?.handleConnectionStateUpdate(connection, connInfo: connInfo, state: newState)
         }
         
         receiveMessage(on: connInfo)
         connection.start(queue: queue)
     }
     
-    private func handleConnectionStateUpdate(_ connection: NWConnection, state: NWConnection.State) {
+    private func handleConnectionStateUpdate(_ connection: NWConnection, connInfo: ConnectionInfo, state: NWConnection.State) {
         queue.async { [weak self] in
             switch state {
             case .ready:
                 print("✅ Connection ready: \(connection.endpoint)")
             case .failed(let error):
                 print("❌ Connection failed: \(error)")
-                self?.removeConnection(connection)
+                self?.removeConnection(connInfo)
             case .cancelled:
                 print("🔌 Connection cancelled")
-                self?.removeConnection(connection)
+                self?.removeConnection(connInfo)
             default:
                 break
             }
@@ -152,7 +163,7 @@ class NetworkManager: ObservableObject {
             
             if let error = error {
                 print("❌ Receive error: \(error)")
-                self.removeConnection(connInfo.connection)
+                self.removeConnection(connInfo)
                 return
             }
             
@@ -164,7 +175,7 @@ class NetworkManager: ObservableObject {
             if !isComplete {
                 self.receiveMessage(on: connInfo)
             } else {
-                self.removeConnection(connInfo.connection)
+                self.removeConnection(connInfo)
             }
         }
     }
@@ -175,14 +186,21 @@ class NetworkManager: ObservableObject {
             
             // Process all complete messages in buffer
             while connInfo.receiveBuffer.count >= 4 {
-                // Read 4-byte length prefix (big-endian)
-                let lengthData = connInfo.receiveBuffer.prefix(4)
-                let length = lengthData.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+                // Read 4-byte length prefix (big-endian) - SAFE way
+                let lengthBytes = connInfo.receiveBuffer.prefix(4)
+                let length = lengthBytes.withUnsafeBytes { buffer -> UInt32 in
+                    // Create aligned copy
+                    var value: UInt32 = 0
+                    withUnsafeMutableBytes(of: &value) { dest in
+                        dest.copyBytes(from: buffer)
+                    }
+                    return UInt32(bigEndian: value)
+                }
                 
                 // Sanity check
                 guard length > 0 && length < 1_000_000 else {
                     print("❌ Invalid message length: \(length)")
-                    self.removeConnection(connInfo.connection)
+                    self.removeConnection(connInfo)
                     return
                 }
                 
@@ -198,19 +216,19 @@ class NetworkManager: ObservableObject {
                 connInfo.receiveBuffer.removeFirst(totalNeeded)
                 
                 // Decode and handle
-                self.handleReceivedMessage(messageData, from: connInfo.connection)
+                self.handleReceivedMessage(messageData, connInfo: connInfo)
             }
         }
     }
     
-    private func handleReceivedMessage(_ data: Data, from connection: NWConnection) {
+    private func handleReceivedMessage(_ data: Data, connInfo: ConnectionInfo) {
         do {
             let message = try JSONDecoder().decode(SyncMessage.self, from: data)
             print("📨 Received: \(message.type) from \(message.fromDeviceId.prefix(8))")
             
             // Register on handshake
             if message.type == "handshake" {
-                registerConnection(connection, deviceId: message.fromDeviceId)
+                registerConnection(connInfo, deviceId: message.fromDeviceId)
             }
             
             DispatchQueue.main.async {
@@ -222,13 +240,9 @@ class NetworkManager: ObservableObject {
         }
     }
     
-    private func registerConnection(_ connection: NWConnection, deviceId: String) {
-        if let existingInfo = connections[deviceId] {
-            // Update existing
-            connections[deviceId] = ConnectionInfo(connection: connection)
-        } else {
-            connections[deviceId] = ConnectionInfo(connection: connection)
-        }
+    private func registerConnection(_ connInfo: ConnectionInfo, deviceId: String) {
+        // Store connection with device ID
+        connections[deviceId] = connInfo
         
         DispatchQueue.main.async { [weak self] in
             self?.activeConnections = self?.connections.count ?? 0
@@ -238,8 +252,8 @@ class NetworkManager: ObservableObject {
         print("✅ Registered device: \(deviceId.prefix(8))")
     }
     
-    private func removeConnection(_ connection: NWConnection) {
-        if let deviceId = connections.first(where: { $0.value.connection === connection })?.key {
+    private func removeConnection(_ connInfo: ConnectionInfo) {
+        if let deviceId = connections.first(where: { $0.value === connInfo })?.key {
             connections.removeValue(forKey: deviceId)
             
             DispatchQueue.main.async { [weak self] in
@@ -264,7 +278,10 @@ class NetworkManager: ObservableObject {
             
             // Create length-prefixed data
             var length = UInt32(messageData.count).bigEndian
-            var packetData = Data(bytes: &length, count: 4)
+            var packetData = Data()
+            withUnsafeBytes(of: &length) { bytes in
+                packetData.append(contentsOf: bytes)
+            }
             packetData.append(messageData)
             
             connInfo.connection.send(
