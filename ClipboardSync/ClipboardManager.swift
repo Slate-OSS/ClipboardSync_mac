@@ -15,6 +15,7 @@ class ClipboardManager: ObservableObject {
     @Published var isMonitoring: Bool = false
     @Published var syncStatus: String = ""
     
+    weak var networkManager: NetworkManager?
     var onClipboardChange: ((ClipboardItem) -> Void)?
     
     private var timer: Timer?
@@ -80,17 +81,33 @@ class ClipboardManager: ObservableObject {
     }
     
     func sendToDevice(_ item: ClipboardItem, device: PairedDevice) -> Bool {
+        guard let networkManager = networkManager else {
+            print("❌ NetworkManager not available")
+            syncStatus = "Network not initialized"
+            return false
+        }
+        
         do {
-            let itemData = try JSONEncoder().encode(item)
-            let encryptedData = try EncryptionManager.encrypt(data: itemData, key: device.sharedKey)
+            let message = try MessageBuilder.createClipboardMessage(
+                item: item,
+                fromDeviceId: UserDefaults.standard.string(forKey: "currentDeviceId") ?? UUID().uuidString,
+                toDeviceId: device.remoteDeviceId,
+                encryptionKey: device.sharedKey
+            )
             
-            // TODO: Send encryptedData over network to Android device
-            print("✅ Encrypted clipboard item for \(device.name): \(encryptedData.count) bytes")
-            syncStatus = "Synced to \(device.name): \(encryptedData.count) bytes"
+            let success = networkManager.sendMessage(message, to: device.remoteDeviceId)
             
-            return true
+            if success {
+                print("✅ Sent clipboard to \(device.name)")
+                syncStatus = "Synced to \(device.name) at \(Date().formatted(date: .omitted, time: .shortened))"
+                return true
+            } else {
+                syncStatus = "Device offline: \(device.name)"
+                return false
+            }
+            
         } catch {
-            print("❌ Encryption failed: \(error)")
+            print("❌ Failed to create message: \(error)")
             syncStatus = "Sync failed: \(error.localizedDescription)"
             return false
         }

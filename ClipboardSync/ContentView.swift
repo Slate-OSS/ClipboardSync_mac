@@ -10,12 +10,79 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var clipboardManager = ClipboardManager()
     @StateObject private var pairingManager = DevicePairingManager()
+    @StateObject private var networkManager = NetworkManager()
     @State private var selectedTab = 0
     
     var body: some View {
         TabView(selection: $selectedTab) {
             // Clipboard Monitor Tab
             VStack(spacing: 16) {
+                // Server Status Card
+                VStack(spacing: 12) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Server Status")
+                                .font(.headline)
+                            Text(networkManager.isServerRunning ? "Running" : "Stopped")
+                                .font(.caption)
+                                .foregroundColor(networkManager.isServerRunning ? .green : .secondary)
+                        }
+                        
+                        Spacer()
+                        
+                        Button(action: {
+                            if networkManager.isServerRunning {
+                                networkManager.stopServer()
+                            } else {
+                                networkManager.startServer()
+                            }
+                        }) {
+                            Text(networkManager.isServerRunning ? "Stop Server" : "Start Server")
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(networkManager.isServerRunning ? Color.red : Color.green)
+                                .cornerRadius(6)
+                        }
+                    }
+                    
+                    if networkManager.isServerRunning {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Image(systemName: "network")
+                                    .foregroundColor(.blue)
+                                Text("IP Address: \(networkManager.localIPAddress):8765")
+                                    .font(.system(.caption, design: .monospaced))
+                                
+                                Button(action: {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(networkManager.localIPAddress, forType: .string)
+                                }) {
+                                    Image(systemName: "doc.on.doc")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            
+                            HStack {
+                                Image(systemName: "antenna.radiowaves.left.and.right")
+                                    .foregroundColor(.green)
+                                Text("\(networkManager.activeConnections) active connection(s)")
+                                    .font(.caption)
+                            }
+                        }
+                        .padding(8)
+                        .background(Color.blue.opacity(0.1))
+                        .cornerRadius(6)
+                    }
+                }
+                .padding()
+                .background(Color(.controlBackgroundColor))
+                .cornerRadius(8)
+                
+                // Clipboard Monitor Card
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Clipboard Sync")
                         .font(.title2)
@@ -45,8 +112,8 @@ struct ContentView: View {
                         if clipboardManager.isMonitoring {
                             clipboardManager.stopMonitoring()
                         } else {
+                            setupIntegration()
                             clipboardManager.startMonitoring()
-                            setupAutoSync()
                         }
                     }) {
                         Text(clipboardManager.isMonitoring ? "Stop" : "Start")
@@ -145,12 +212,64 @@ struct ContentView: View {
                 .tag(1)
         }
         .frame(minWidth: 600, minHeight: 700)
+        .onAppear {
+            setupIntegration()
+        }
     }
     
-    private func setupAutoSync() {
+    private func setupIntegration() {
+        // Connect clipboard manager to network manager
+        clipboardManager.networkManager = networkManager
+        
+        // Setup auto-sync on clipboard change
         clipboardManager.onClipboardChange = { item in
-            // Auto-sync to all paired devices
             clipboardManager.autoSyncToAllDevices(item, devices: pairingManager.pairedDevices)
+        }
+        
+        // Handle incoming network messages
+        networkManager.onMessageReceived = { message, fromDeviceId in
+            handleIncomingMessage(message, from: fromDeviceId)
+        }
+    }
+    
+    private func handleIncomingMessage(_ message: SyncMessage, from deviceId: String) {
+        switch message.type {
+        case "handshake":
+            print("🤝 Handshake from \(deviceId.prefix(8))")
+            // Handshake is auto-handled by NetworkManager
+            
+        case "clipboard_update":
+            // Find paired device
+            guard let device = pairingManager.pairedDevices.first(where: { $0.remoteDeviceId == deviceId }) else {
+                print("⚠️ Received message from unknown device: \(deviceId.prefix(8))")
+                return
+            }
+            
+            do {
+                let item = try MessageBuilder.decodeClipboardMessage(message: message, decryptionKey: device.sharedKey)
+                
+                // Update clipboard
+                DispatchQueue.main.async {
+                    clipboardManager.copyToClipboard(text: item.content)
+                    clipboardManager.clipboardHistory.insert(item, at: 0)
+                    if clipboardManager.clipboardHistory.count > 50 {
+                        clipboardManager.clipboardHistory.removeLast()
+                    }
+                }
+                
+                print("📥 Received clipboard from \(device.name)")
+                
+            } catch {
+                print("❌ Failed to decode clipboard: \(error)")
+            }
+            
+        case "ping":
+            // Respond with pong
+            let pong = MessageBuilder.createPingMessage(fromDeviceId: pairingManager.currentDeviceId)
+            _ = networkManager.sendMessage(pong, to: deviceId)
+            
+        default:
+            print("⚠️ Unknown message type: \(message.type)")
         }
     }
 }
